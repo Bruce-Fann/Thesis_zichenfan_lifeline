@@ -23,6 +23,7 @@ library(tidyverse)
 library(hurricaneexposure)
 library(hurricaneexposuredata)
 library(tidycensus)
+library(tidyverse)
 library(readxl)
 
 ```
@@ -91,6 +92,7 @@ pop_annual |> summarise(
   n_miss   = sum(is.na(population))
 )
 
+
 ## ── Merge into df_state ───────────────────────────────────────
 df_state <- df_state |>
   mutate(date = as.Date(date_string_est),
@@ -103,7 +105,9 @@ df_state |> summarise(
   n_miss_pop  = sum(is.na(population)),
   n_miss_rate = sum(is.na(call_rate))
 )
+
 ```
+
 
 ```{r check agregatred data range}
 
@@ -153,7 +157,8 @@ df_state %>%
   head(10)
 ```
 
-##EDA
+#EDA
+##Wind Data Exploration
 
 ```{r winds}
 data("storm_winds")
@@ -217,6 +222,64 @@ storm_winds <- storm_winds %>%
 # 再确认年份范围
 range(storm_winds$year_storm, na.rm=T)
 ```
+
+## Population data merge
+
+```{r merge population}
+## Merge into main data and compute call rate
+df_state <- df_state |>
+  mutate(
+    date  = as.Date(date_string_est),
+    year  = year(date)
+  ) |>
+  left_join(pop_annual,
+            by = c("state_fips", "year")) |>
+  mutate(
+    call_rate = num_calls / (population / 100000)
+  )
+# 2007-2018 population
+
+pop_list <- map(2007:2018, function(yr) {
+  get_estimates(
+    geography = "state",
+    product = "population",
+    year = yr
+  ) %>%
+    filter(variable == "POP") %>%
+    select(GEOID, NAME, value) %>%
+    mutate(year = yr)
+})
+
+pop_annual <- bind_rows(pop_list) %>%
+  rename(state_fips = GEOID,
+         population = value)
+
+## ── Problem 2: diagnose remaining mismatch ───────────────────
+## Check which state_fips in df_state have no match in pop_annual
+df_state |>
+  filter(is.na(population)) |>
+  distinct(state_fips) |>
+  anti_join(pop_annual, by = "state_fips")
+
+## ── Re-merge ─────────────────────────────────────────────────
+df_state <- df_state |>
+  select(-population, -call_rate) |>   ## remove old failed columns
+  left_join(pop_annual, by = c("state_fips", "year")) |>
+  mutate(call_rate = num_calls / (population / 100000))
+
+## ── Check again ───────────────────────────────────────────────
+df_state |> summarise(
+  n_miss_pop  = sum(is.na(population)),
+  n_miss_rate = sum(is.na(call_rate))
+)
+
+## Check how much data these territories have
+df_state |>
+  filter(state_fips %in% c("60","66","69","78","80")) |>
+  count(state_fips, year) |>
+  print(n = 50)
+```
+
 
 
 
