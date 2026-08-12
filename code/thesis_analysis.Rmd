@@ -1,0 +1,210 @@
+---
+title: "thesis_analysis"
+author: "Zichen Fan"
+date: "2026-07-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Load Data
+
+```{r load package}
+
+options(repos = c(CRAN = "https://cran.r-project.org"))
+install.packages("remotes")
+remotes::install_github("geanders/hurricaneexposuredata")
+remotes::install_github("geanders/hurricaneexposure")
+
+library(readr)
+library(tidyverse)
+library(hurricaneexposure)
+library(hurricaneexposuredata)
+library(tidycensus)
+library(tidyverse)
+
+```
+
+```{r import aggregated}
+
+df_state <- read_csv("data/aggregated/state_daily_lld_land.csv")
+range(df_state$date_string_est)
+nrow(df_state)
+
+```
+
+```{r check hurricane data}
+data(hurr_tracks)
+head(hurr_tracks)
+range(hurr_tracks$date)
+```
+
+```{r population}
+library(tidycensus)
+
+library(tidyverse)
+
+## Direct CSV from Census - 2010 to 2019
+pop_annual <- read_csv("https://www2.census.gov/programs-surveys/popest/datasets/2010-2019/state/totals/nst-est2019-alldata.csv") |>
+  filter(STATE != 0) |>
+  select(STATE, POPESTIMATE2010:POPESTIMATE2018) |>
+  pivot_longer(
+    cols = starts_with("POP"),
+    names_to = "year",
+    values_to = "population"
+  ) |>
+  mutate(
+    year = as.integer(str_extract(year, "\\d{4}")),
+    state_fips = str_pad(STATE, 2, pad = "0")
+  ) |>
+  select(state_fips, year, population)
+```
+
+
+```{r merge population}
+## Merge into main data and compute call rate
+df_state <- df_state |>
+  mutate(
+    date  = as.Date(date_string_est),
+    year  = year(date)
+  ) |>
+  left_join(pop_annual,
+            by = c("state_fips", "year")) |>
+  mutate(
+    call_rate = num_calls / (population / 100000)
+  )
+# 2007-2018 population
+
+pop_list <- map(2007:2018, function(yr) {
+  get_estimates(
+    geography = "state",
+    product = "population",
+    year = yr
+  ) %>%
+    filter(variable == "POP") %>%
+    select(GEOID, NAME, value) %>%
+    mutate(year = yr)
+})
+
+pop_annual <- bind_rows(pop_list) %>%
+  rename(state_fips = GEOID,
+         population = value)
+```
+
+```{r check agregatred data range}
+
+df_state %>%
+  group_by(year = lubridate::year(date_string_est)) %>%
+  summarise(pct_na_answered = mean(is.na(pct_calls_answered)))
+
+df_state |>
+  mutate(year = as.integer(substr(date_string_est, 1, 4)))|>
+  group_by(year) %>%
+     summarise(na_rate = mean(is.na(pct_calls_answered)))
+
+#疏松程度
+# 检验各年数据密度
+df_state %>%
+  mutate(
+    year = year(as.Date(date_string_est)),
+    # 每年实际天数
+    days_in_year = case_when(
+      year == 2020 ~ 366,  # 闰年
+      year == 2024 ~ 366,
+      TRUE ~ 365
+    )
+  ) %>%
+  group_by(year, state_fips) %>%
+  summarise(
+    days_with_data = n(),
+    days_expected = first(days_in_year),
+    coverage = days_with_data / days_expected,
+    .groups = "drop"
+  ) %>%
+  group_by(year) %>%
+  summarise(
+    states_above_80pct = sum(coverage > 0.8),
+    states_above_50pct = sum(coverage > 0.5),
+    median_coverage = round(median(coverage), 3),
+    min_coverage = round(min(coverage), 3),
+    n_states = n_distinct(state_fips),
+    .groups = "drop"
+  ) %>%
+  print(n = 25)
+
+# 看有没有单位数FIPS，比如Alabama应该是"01"还是"1"
+df_state %>% 
+  distinct(state_fips) %>% 
+  arrange(state_fips) %>% 
+  head(10)
+```
+
+##EDA
+
+```{r winds}
+data("storm_winds")
+head(storm_winds)
+colnames(storm_winds)
+nrow(storm_winds)
+
+# number of winds
+storm_winds %>% distinct(storm_id) %>% nrow()
+```
+
+```{r}
+# hurr_tracks样本
+hurr_tracks %>% slice(1:20) %>% as.data.frame() %>% print(row.names=FALSE)
+
+# storm_winds样本
+storm_winds %>% slice(1:20) %>% as.data.frame() %>% print(row.names=FALSE)
+
+# storm_winds的wind值分布
+summary(storm_winds$vmax_sust)
+
+# fips的格式确认
+storm_winds$fips[1:10]
+```
+
+```{r about wind}
+# 1. 确认单位
+range(storm_winds$vmax_sust, na.rm=T)
+
+# 2. 确认已知强风暴的最大值
+storm_winds %>%
+  filter(grepl("2005|2017", usa_atcf_id)) %>%
+  group_by(usa_atcf_id) %>%
+  summarise(max_wind = max(vmax_sust)) %>%
+  arrange(desc(max_wind)) %>%
+  head(10)
+
+# 3. 确认有多少场风暴和时间范围
+storm_winds %>%
+  summarise(
+    n_storms = n_distinct(usa_atcf_id),
+    n_counties = n_distinct(fips),
+    year_range = paste(
+      min(year(date_time_max_wind)),
+      max(year(date_time_max_wind)),
+      sep="-"
+    )
+  )
+# 检查日期列
+class(storm_winds$date_time_max_wind)
+head(storm_winds$date_time_max_wind)
+
+# 如果是字符型，需要转换
+storm_winds <- storm_winds %>%
+  mutate(
+    date_time_max_wind = ymd_hms(date_time_max_wind),
+    date_max_wind = as.Date(date_time_max_wind),
+    year_storm = year(date_time_max_wind)
+  )
+
+# 再确认年份范围
+range(storm_winds$year_storm, na.rm=T)
+```
+
+
+
