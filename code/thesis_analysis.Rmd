@@ -9,7 +9,7 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-##Load Data
+#Load Data
 
 ```{r load package}
 
@@ -36,24 +36,25 @@ nrow(df_state)
 
 ```
 
-```{r check hurricane data}
+```{r import hurricane data}
 data(hurr_tracks)
 head(hurr_tracks)
 range(hurr_tracks$date)
 ```
 
-```{r population}
+```{r import population data }
+
 
 ## ── State FIPS lookup ─────────────────────────────────────────
 state_fips_lookup <- tibble(
-  state_name = c(state.name, "District of Columbia", "Puerto Rico"),
+  state_name = c(state.name, "District of Columbia"),
   state_fips = c(
     "01","02","04","05","06","08","09","10","12","13",
     "15","16","17","18","19","20","21","22","23","24",
     "25","26","27","28","29","30","31","32","33","34",
     "35","36","37","38","39","40","41","42","44","45",
     "46","47","48","49","50","51","53","54","55","56",
-    "11","72"
+    "11"
   )
 )
 
@@ -69,7 +70,7 @@ clean_pop <- function(df, years) {
     rename(state_name = geo)
 }
 
-## ── Read files ────────────────────────────────────────────────
+## ── Read all three files ──────────────────────────────────────
 pop_2005_2009 <- read_xls(
   "data/population/st-est00int-01.xls", skip = 3
 ) |> clean_pop(2005:2009)
@@ -78,8 +79,16 @@ pop_2010_2019 <- read_excel(
   "data/population/nst-est2020int-pop.xlsx", skip = 3
 ) |> clean_pop(2010:2019)
 
-## ── Combine and add FIPS ──────────────────────────────────────
-pop_annual <- bind_rows(pop_2005_2009, pop_2010_2019) |>
+pop_2020_2021 <- read_excel(
+  "data/population/NST-EST2025-POP.xlsx", skip = 3
+) |> clean_pop(2020:2021)
+
+## ── Combine 2005-2021 and add FIPS ───────────────────────────
+pop_annual <- bind_rows(
+  pop_2005_2009,
+  pop_2010_2019,
+  pop_2020_2021
+) |>
   left_join(state_fips_lookup, by = "state_name") |>
   filter(!is.na(state_fips)) |>
   select(state_fips, year, population) |>
@@ -92,22 +101,11 @@ pop_annual |> summarise(
   n_miss   = sum(is.na(population))
 )
 
-
-## ── Merge into df_state ───────────────────────────────────────
-df_state <- df_state |>
-  mutate(date = as.Date(date_string_est),
-         year = year(date)) |>
-  left_join(pop_annual, by = c("state_fips", "year")) |>
-  mutate(call_rate = num_calls / (population / 100000))
-
-## ── Final check ───────────────────────────────────────────────
-df_state |> summarise(
-  n_miss_pop  = sum(is.na(population)),
-  n_miss_rate = sum(is.na(call_rate))
-)
-
 ```
 
+
+#data cleanining
+## Examine data set
 
 ```{r check agregatred data range}
 
@@ -120,14 +118,13 @@ df_state |>
   group_by(year) %>%
      summarise(na_rate = mean(is.na(pct_calls_answered)))
 
-#疏松程度
-# 检验各年数据密度
+# check the data validity
 df_state %>%
   mutate(
     year = year(as.Date(date_string_est)),
-    # 每年实际天数
+    # actual days
     days_in_year = case_when(
-      year == 2020 ~ 366,  # 闰年
+      year == 2020 ~ 366,  #
       year == 2024 ~ 366,
       TRUE ~ 365
     )
@@ -150,14 +147,55 @@ df_state %>%
   ) %>%
   print(n = 25)
 
-# 看有没有单位数FIPS，比如Alabama应该是"01"还是"1"
+# check fips
 df_state %>% 
   distinct(state_fips) %>% 
   arrange(state_fips) %>% 
   head(10)
 ```
 
-#EDA
+```{r df_state clean}
+
+territories <- c("60","66","69","78","80","72")
+df_clean <- df_state |>
+  select(
+    date_string_est, state_fips,
+    num_calls,
+    num_calls_answered, pct_calls_answered,
+    num_calls_abandon,  pct_calls_abandon,
+    est_wait_duration_avg,
+    num_calls_frequent, num_calls_repeat
+  ) |>
+  mutate(
+    date       = as.Date(date_string_est),
+    year       = year(date),
+    month      = month(date),
+    dow        = wday(date, label = FALSE),
+    state_fips = str_pad(state_fips, 2, pad = "0")
+  ) |>
+  select(-date_string_est) |>              ## remove string version
+  filter(
+    year >= 2007 & year <= 2021,           ## analysis window
+    !state_fips %in% territories           ## remove territories + PR
+  ) |>
+  left_join(pop_annual,
+            by = c("state_fips", "year")) |>
+  mutate(call_rate = num_calls / (population / 100000))
+
+## ── Verify ────────────────────────────────────────────────────
+df_clean |> summarise(
+  n_rows      = n(),
+  n_states    = n_distinct(state_fips),
+  date_range  = paste(min(date), max(date), sep = " to "),
+  n_miss_pop  = sum(is.na(population)),
+  n_miss_rate = sum(is.na(call_rate))
+)
+
+## ── Check states ──────────────────────────────────────────────
+df_state |> distinct(state_fips) |> arrange(state_fips)
+```
+
+
 ##Wind Data Exploration
 
 ```{r winds}
@@ -170,25 +208,43 @@ nrow(storm_winds)
 storm_winds %>% distinct(storm_id) %>% nrow()
 ```
 
-```{r}
-# hurr_tracks样本
+```{r check sample}
+# hurr_tracks
 hurr_tracks %>% slice(1:20) %>% as.data.frame() %>% print(row.names=FALSE)
 
-# storm_winds样本
+# storm_winds
 storm_winds %>% slice(1:20) %>% as.data.frame() %>% print(row.names=FALSE)
 
-# storm_winds的wind值分布
+# storm_winds
 summary(storm_winds$vmax_sust)
 
-# fips的格式确认
+# fips
 storm_winds$fips[1:10]
 ```
 
 ```{r about wind}
-# 1. 确认单位
+# unit
 range(storm_winds$vmax_sust, na.rm=T)
 
-# 2. 确认已知强风暴的最大值
+
+
+## Check actual year range in storm_winds
+storm_winds |>
+  mutate(year = year(date_time_max_wind)) |>
+  summarise(
+    min_year = min(year, na.rm=T),
+    max_year = max(year, na.rm=T),
+    n_storms = n_distinct(usa_atcf_id)
+  )
+
+## Check latest storms
+storm_winds |>
+  mutate(year = year(date_time_max_wind)) |>
+  filter(year >= 2019) |>
+  distinct(usa_atcf_id, year) |>
+  arrange(year)
+
+# 2. known max wind
 storm_winds %>%
   filter(grepl("2005|2017", usa_atcf_id)) %>%
   group_by(usa_atcf_id) %>%
@@ -196,7 +252,7 @@ storm_winds %>%
   arrange(desc(max_wind)) %>%
   head(10)
 
-# 3. 确认有多少场风暴和时间范围
+# 3. storms and time range
 storm_winds %>%
   summarise(
     n_storms = n_distinct(usa_atcf_id),
@@ -207,11 +263,11 @@ storm_winds %>%
       sep="-"
     )
   )
-# 检查日期列
+# date
 class(storm_winds$date_time_max_wind)
 head(storm_winds$date_time_max_wind)
 
-# 如果是字符型，需要转换
+
 storm_winds <- storm_winds %>%
   mutate(
     date_time_max_wind = ymd_hms(date_time_max_wind),
@@ -219,8 +275,21 @@ storm_winds <- storm_winds %>%
     year_storm = year(date_time_max_wind)
   )
 
-# 再确认年份范围
 range(storm_winds$year_storm, na.rm=T)
+
+## Confirm actual coverage of storm_winds
+storm_winds |>
+  mutate(year = year(date_time_max_wind)) |>
+  summarise(
+    min_year = min(year, na.rm=T),
+    max_year = max(year, na.rm=T)
+  )
+## Confirm Lifeline data range
+df_state |>
+  summarise(
+    min_date = min(as.Date(date_string_est)),
+    max_date = max(as.Date(date_string_est))
+  )
 ```
 
 ## Population data merge
