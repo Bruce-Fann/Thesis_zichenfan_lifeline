@@ -12,12 +12,6 @@ knitr::opts_chunk$set(echo = TRUE)
 #Load Data
 
 ```{r load package}
-
-options(repos = c(CRAN = "https://cran.r-project.org"))
-install.packages("remotes")
-remotes::install_github("geanders/hurricaneexposuredata")
-remotes::install_github("geanders/hurricaneexposure")
-
 library(readr)
 library(tidyverse)
 library(hurricaneexposure)
@@ -30,7 +24,7 @@ library(readxl)
 
 ```{r import aggregated and storm}
 
-df_state <- read_csv("data/state_daily_lld_land.csv")
+df_state <- read_csv("data/state_daily_lld.csv")
 data(hurr_tracks)
 ```
 
@@ -138,12 +132,35 @@ df_state %>%
   ) %>%
   print(n = 25)
 
-# check fips
-df_state %>% 
-  distinct(state_fips) %>% 
-  arrange(state_fips) %>% 
-  head(10)
+## Which states are in Lifeline but NOT in storm_winds
+df_state |>
+  distinct(state_fips) |>
+  anti_join(
+    storm_winds |>
+      mutate(state_fips = str_pad(substr(fips,1,2), 2, pad="0")) |>
+      distinct(state_fips),
+    by = "state_fips"
+  )
+
+## How much data do these states have
+excluded_state = df_state |>
+  mutate(
+    in_storm_data = state_fips %in% (
+      storm_winds |>
+        mutate(state_fips = str_pad(substr(fips,1,2), 2, pad="0")) |>
+        pull(state_fips) |>
+        unique()
+    )
+  ) |>
+  group_by(in_storm_data) |>
+  summarise(
+    n_states = n_distinct(state_fips),
+    n_rows   = n(),
+    mean_calls = mean(num_calls, na.rm=T)
+  )
 ```
+
+##cleaning lifeline calls data
 
 ```{r df_state clean}
 
@@ -182,6 +199,7 @@ df_clean |> summarise(
   n_miss_rate = sum(is.na(call_rate))
 )
 
+glimpse(df_clean)
 ```
 
 
@@ -189,31 +207,70 @@ df_clean |> summarise(
 
 ```{r winds}
 data("storm_winds")
-head(storm_winds)
-colnames(storm_winds)
-nrow(storm_winds)
-
 # number of winds
 storm_winds %>% distinct(storm_id) %>% nrow()
-```
-
-```{r check sample}
-# hurr_tracks
-hurr_tracks %>% slice(1:20) %>% as.data.frame() %>% print(row.names=FALSE)
-
-# storm_winds
-storm_winds %>% slice(1:20) %>% as.data.frame() %>% print(row.names=FALSE)
-
-# storm_winds
-summary(storm_winds$vmax_sust)
-
-# fips
-storm_winds$fips[1:10]
+## Basic structure
+glimpse(storm_winds)
 ```
 
 ```{r about wind}
-# unit
-range(storm_winds$vmax_sust, na.rm=T)
+
+
+## Coverage summary
+storm_winds |>
+  summarise(
+    n_storms   = n_distinct(usa_atcf_id),
+    n_counties = n_distinct(fips),
+    min_wind   = min(vmax_sust, na.rm=T),
+    max_wind   = max(vmax_sust, na.rm=T)
+  )
+
+## Year distribution of storms
+storm_winds |>
+  mutate(year = year(date_time_max_wind)) |>
+  filter(year >= 2007) |>
+  distinct(usa_atcf_id, year) |>
+  count(year) |>
+  print(n = 20)
+
+## ── Aggregate county wind to state level ──────────────────────
+state_winds <- storm_winds |>
+  mutate(
+    state_fips = str_pad(substr(fips, 1, 2), 2, pad = "0"),
+    year       = year(date_time_max_wind),
+    date_max   = as.Date(date_time_max_wind)
+  ) |>
+  filter(year >= 2007 & year <= 2021) |>
+  group_by(usa_atcf_id, state_fips) |>
+  summarise(
+    max_wind  = max(vmax_sust, na.rm=T),  ## state-level max wind (m/s)
+    date_max  = min(date_max, na.rm=T),   ## earliest peak date = landfall proxy
+    year      = first(year),
+    .groups   = "drop"
+  ) |>
+  ## only keep states with meaningful exposure
+  filter(max_wind >= 17.5)                ## >= 34 knots = tropical storm threshold
+
+## ── Add intensity category ────────────────────────────────────
+state_winds <- state_winds |>
+  mutate(intensity = case_when(
+    max_wind <  17.5              ~ "No storm",
+    max_wind >= 17.5 & max_wind < 32.9 ~ "TS",
+    max_wind >= 32.9 & max_wind < 49.4 ~ "Cat1-2",
+    max_wind >= 49.4              ~ "Cat3+"
+  ))
+
+## ── Check ─────────────────────────────────────────────────────
+state_winds |>
+  count(intensity) |>
+  mutate(pct = round(n/sum(n)*100, 1))
+
+state_winds |>
+  summarise(
+    n_storms = n_distinct(usa_atcf_id),
+    n_states = n_distinct(state_fips),
+    n_events = n()
+  )
 
 
 
@@ -233,15 +290,7 @@ storm_winds |>
   distinct(usa_atcf_id, year) |>
   arrange(year)
 
-# 2. known max wind
-storm_winds %>%
-  filter(grepl("2005|2017", usa_atcf_id)) %>%
-  group_by(usa_atcf_id) %>%
-  summarise(max_wind = max(vmax_sust)) %>%
-  arrange(desc(max_wind)) %>%
-  head(10)
-
-# 3. storms and time range
+# storms and time range
 storm_winds %>%
   summarise(
     n_storms = n_distinct(usa_atcf_id),
@@ -266,76 +315,7 @@ storm_winds <- storm_winds %>%
 
 range(storm_winds$year_storm, na.rm=T)
 
-## Confirm actual coverage of storm_winds
-storm_winds |>
-  mutate(year = year(date_time_max_wind)) |>
-  summarise(
-    min_year = min(year, na.rm=T),
-    max_year = max(year, na.rm=T)
-  )
-## Confirm Lifeline data range
-df_state |>
-  summarise(
-    min_date = min(as.Date(date_string_est)),
-    max_date = max(as.Date(date_string_est))
-  )
-```
 
-## Population data merge
-
-```{r merge population}
-## Merge into main data and compute call rate
-df_state <- df_state |>
-  mutate(
-    date  = as.Date(date_string_est),
-    year  = year(date)
-  ) |>
-  left_join(pop_annual,
-            by = c("state_fips", "year")) |>
-  mutate(
-    call_rate = num_calls / (population / 100000)
-  )
-# 2007-2018 population
-
-pop_list <- map(2007:2018, function(yr) {
-  get_estimates(
-    geography = "state",
-    product = "population",
-    year = yr
-  ) %>%
-    filter(variable == "POP") %>%
-    select(GEOID, NAME, value) %>%
-    mutate(year = yr)
-})
-
-pop_annual <- bind_rows(pop_list) %>%
-  rename(state_fips = GEOID,
-         population = value)
-
-## ── Problem 2: diagnose remaining mismatch ───────────────────
-## Check which state_fips in df_state have no match in pop_annual
-df_state |>
-  filter(is.na(population)) |>
-  distinct(state_fips) |>
-  anti_join(pop_annual, by = "state_fips")
-
-## ── Re-merge ─────────────────────────────────────────────────
-df_state <- df_state |>
-  select(-population, -call_rate) |>   ## remove old failed columns
-  left_join(pop_annual, by = c("state_fips", "year")) |>
-  mutate(call_rate = num_calls / (population / 100000))
-
-## ── Check again ───────────────────────────────────────────────
-df_state |> summarise(
-  n_miss_pop  = sum(is.na(population)),
-  n_miss_rate = sum(is.na(call_rate))
-)
-
-## Check how much data these territories have
-df_state |>
-  filter(state_fips %in% c("60","66","69","78","80")) |>
-  count(state_fips, year) |>
-  print(n = 50)
 ```
 
 

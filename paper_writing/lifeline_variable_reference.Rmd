@@ -1,0 +1,296 @@
+---
+title: "Lifeline Data: Variable Definitions and Research Implications"
+author: "Research Reference Document"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    self_contained: true 
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+---
+
+## 1. Source and Context
+
+This document summarizes variable definitions derived from the original descriptive
+analysis script (`a_01_Lifeline_Descriptives.qmd`) authored by Kelton Minor and
+Robbie M. Parks (September 2023). The script processes individual-level call records
+from the National Suicide Prevention Lifeline (NSPL) into daily state-level aggregates.
+All variable definitions below are grounded directly in the aggregation code, not
+assumed from variable names alone.
+
+**Data coverage confirmed:**
+
+- Time range: 2005-01-01 to 2022-12-31
+- Geographic unit: US state (state_fips, 2-digit character)
+- Temporal unit: calendar day
+- Analysis window adopted: **2007–2021**
+  (2005–2006 excluded due to data sparsity; post-2021 excluded due to storm
+  exposure data availability from `hurricaneexposuredata`)
+
+---
+
+## 2. Call Flow Hierarchy
+
+Every inbound call passes through a sequential system funnel. Each stage below
+represents a subset of the stage above it. Understanding this hierarchy is essential
+for interpreting the aggregated variables correctly.
+
+```
+num_calls          [All inbound calls — the denominator]
+      │
+      ├── call_abandoned       [Caller hung up while waiting; median wait ~24 sec]
+      │       └── call_fast_abandon  [Hung up very quickly; median wait ~15 sec]
+      │
+      └── call_routed          [Entered the routing system]
+              └── call_connected     [Successfully connected to a counselor]
+                      └── call_answered   [Counselor picked up — available from 2019 only]
+                              └── call_complete  [Full conversation completed]
+```
+
+**Key source evidence** (from `a_01_Lifeline_Descriptives.qmd`, lines 994–997):
+
+> `"time to abandon (median: 24 sec, 95% of abandoned calls were <= 110 sec long)"`  
+> `"fast abandon length median ~15sec (95% obs below 40 seconds)"`
+
+---
+
+## 3. Variable Definitions
+
+
+### 3.1 Primary Outcome
+
+| Variable | Definition | Availability |
+|---|---|---|
+| `num_calls` | Total inbound call count per state per day | Full period |
+| `call_rate` | `num_calls / (population / 100,000)` — calls per 100k residents | Full period (after population merge) |
+
+`num_calls` is the count of all calls that reached the Lifeline system, regardless
+of outcome. It captures **demand**, not service delivery.
+
+---
+
+### 3.2 Abandonment Variables
+
+**Critical clarification:** `call_abandoned` is confirmed to represent
+**caller-initiated hang-up during the waiting period**, not a system failure or
+technical dropout. Evidence: abandoned calls have a recorded call duration
+(median 24 seconds), which would not exist if the call had never connected to the
+system at all.
+
+| Variable | Definition | Availability |
+|---|---|---|
+| `num_calls_abandon` | Count of calls where caller hung up while waiting | Full period |
+| `pct_calls_abandon` | `num_calls_abandon / num_calls` | Full period |
+| `num_calls_fast_abandon` | Count of calls where caller hung up very quickly (median ~15 sec) | Full period |
+| `pct_calls_fast_abandon` | `num_calls_fast_abandon / num_calls` | Full period |
+
+**Distinguishing the two abandonment types:**
+
+`pct_calls_abandon` and `pct_calls_fast_abandon` likely reflect two distinct
+behavioral mechanisms:
+
+- **Sustained abandon** (`abandon - fast_abandon`): caller stayed on hold for a
+  meaningful duration before giving up, most plausibly due to excessive wait time.
+  This is the cleaner signal of **system capacity pressure**.
+
+- **Fast abandon**: caller disconnected almost immediately. This may reflect
+  impulsive help-seeking behavior (e.g., acute distress followed by rapid
+  second-guessing), accidental calls, or brief crisis "cries for help" that do not
+  result in sustained contact. The behavioral interpretation differs substantially
+  from sustained abandon.
+
+If these two series respond differently to storm exposure (e.g., fast abandon rises
+in the acute phase while sustained abandon rises in the recovery phase), this would
+constitute a novel finding regarding behavioral heterogeneity in crisis help-seeking.
+
+---
+
+### 3.3 Service Delivery Variables
+
+| Variable | Definition | Availability |
+|---|---|---|
+| `num_calls_answered` | Count of calls where a counselor picked up | **2019 onward only** |
+| `pct_calls_answered` | `num_calls_answered / num_calls` | **2019 onward only** |
+| `num_calls_connected` | Count of calls successfully connected to a counselor | Full period |
+| `pct_calls_connected` | `num_calls_connected / num_calls` | Full period |
+| `num_calls_complete` | Count of calls that completed a full conversation | Full period |
+| `pct_calls_complete` | `num_calls_complete / num_calls` | Full period |
+| `num_calls_routed` | Count of calls that entered the routing system | Full period |
+| `pct_calls_routed` | `num_calls_routed / num_calls` | Full period |
+
+**Important data limitation:** `call_answered` is explicitly confirmed as absent
+before 2019 (source: `lld[!is.na(call_answered), min(year_est)] #2019`).
+Any analysis using `pct_calls_answered` should be restricted to 2019–2021 or
+clearly caveated.
+
+`pct_calls_connected` is available for the full period and may serve as a
+proxy for `pct_calls_answered` in earlier years, though the two capture slightly
+different stages of the call flow.
+
+---
+
+### 3.4 Caller Characteristic Variables
+
+| Variable | Definition | Availability |
+|---|---|---|
+| `num_calls_repeat` | Count of calls from repeat callers on that day | Full period |
+| `pct_calls_repeat` | `num_calls_repeat / num_calls` | Full period |
+| `num_calls_frequent` | Count of calls from frequent callers (higher threshold than repeat) | Full period |
+| `pct_calls_frequent` | `num_calls_frequent / num_calls` | Full period |
+| `num_calls_cell` | Count of calls placed from mobile phones | Full period |
+| `pct_calls_cell` | `num_calls_cell / num_calls` | Full period |
+
+**Research relevance of `pct_calls_cell`:**
+
+In the aftermath of a tropical cyclone, fixed-line telephone infrastructure is
+often damaged or inaccessible, while mobile networks may partially persist.
+A post-storm increase in `pct_calls_cell` could serve as an indirect indicator
+that callers are displaced, in damaged areas, or in the field — i.e., that the
+calls originate from the most acutely affected populations. If `pct_calls_cell`
+rises alongside `num_calls` after storm landfall, it strengthens the inference
+that observed call volume increases reflect genuine disaster-proximate distress
+rather than general awareness effects.
+
+---
+
+### 3.5 Timing Variables
+
+All timing variables are calculated only among calls where the relevant event
+occurred (e.g., `time_to_abandon_greeting` is computed only for calls that were
+abandoned during the greeting phase).
+
+| Variable | Definition |
+|---|---|
+| `est_wait_duration_avg` | Estimated total wait duration (average), all calls |
+| `est_wait_duration_50p` | Estimated total wait duration (median) |
+| `est_talk_duration_avg` | Estimated talk time duration (average) |
+| `est_talk_duration_50p` | Estimated talk time duration (median) |
+| `time_to_abandon_greeting_avg` | Wait time before abandonment at greeting stage |
+| `time_to_abandon_center_avg` | Wait time before abandonment at center routing stage |
+| `time_to_abandon_network_avg` | Wait time before abandonment at network routing stage |
+| `time_to_connect_avg` | Time from call initiation to counselor connection |
+| `time_to_route_avg` | Time from call initiation to entry into routing queue |
+
+**Research relevance of `est_wait_duration_avg`:**
+
+If call volume rises post-storm and system staffing does not increase
+correspondingly, average wait times should rise. `est_wait_duration_avg` provides
+a direct measure of this pressure and is interpretable without ambiguity:
+longer waits indicate a supply-demand imbalance in crisis counselor availability.
+This variable is available for the full analysis period and complements
+`pct_calls_abandon` as a system capacity indicator.
+
+The three stage-specific abandonment timing variables (`greeting`, `center`,
+`network`) identify which part of the call routing pipeline becomes the binding
+constraint during high-demand periods. These are too granular for primary
+analysis but may inform targeted policy recommendations in the Discussion.
+
+---
+
+## 4. Variables Excluded and Rationale
+
+| Variable | Reason for Exclusion |
+|---|---|
+| `call_duration_avg/50p` | Theoretically ambiguous (longer calls ≠ more severe crisis; could reflect routing delays, counselor style, or call type) |
+| `call_talk_time_avg/50p` | Highly correlated with `call_duration`; no additional interpretive value |
+| `time_to_abandon_*` (stage-specific) | Too granular for primary outcomes; retained conceptually for Discussion |
+| All `_50p` variables | Redundant with corresponding `_avg` variables for panel regression purposes |
+| `caller_time_zone` | Not relevant to research questions |
+| `pct_calls_answered` as primary | Available only from 2019; insufficient temporal coverage for main analysis window |
+
+---
+
+## 5. Selected Variables for Analysis
+
+Based on the definitions above, the following variables are retained in `df_state`
+for the primary analysis:
+
+```r
+df_state <- df_state |>
+  select(
+    ## Identifiers
+    date_string_est, state_fips,
+
+    ## Primary outcome
+    num_calls,           ## demand-side: total help-seeking volume
+
+    ## Secondary outcomes: system capacity
+    pct_calls_abandon,        ## sustained wait-and-hang-up (full period)
+    pct_calls_fast_abandon,   ## impulsive/immediate hang-up (full period)
+    pct_calls_answered,       ## counselor answer rate (2019+ only)
+    est_wait_duration_avg,    ## system queue pressure
+
+    ## Caller characteristics
+    pct_calls_cell,      ## proxy for displaced/field callers
+    num_calls_repeat,    ## repeated attempts (failed contact or recurring crisis)
+
+    ## Derived
+    call_rate            ## num_calls per 100k population
+  )
+```
+
+---
+
+## 6. Implications for Research Questions
+
+### RQ1 — Descriptive temporal pattern
+
+Use `call_rate` as the primary y-axis. Overlay `pct_calls_abandon` on a secondary
+axis to show whether the system absorbed or was overwhelmed by demand changes.
+This creates a demand–supply dual-axis figure analogous to what Rivera-González
+et al. (2024) did for the Maui wildfire, but with an explicit capacity indicator.
+
+### RQ2 — Lagged effect structure (event study)
+
+Primary model outcome: `log(call_rate)`.
+Secondary model outcome: `pct_calls_abandon` (system pressure confirmation).
+The two outcomes together allow a claim that storms both raised demand *and*
+degraded service accessibility — a stronger public health argument than call
+volume alone.
+
+### RQ3 — Dose-response by storm intensity
+
+If `pct_calls_cell` rises more sharply after higher-intensity storms, this
+corroborates the dose-response interpretation: stronger storms displace more
+people, and displaced callers are more likely to use mobile phones.
+This provides a behavioral mechanism to support the dose-response claim,
+independent of the wind speed measurement itself.
+
+---
+
+## 7. Key Data Caveats for Writing
+
+1. **`call_answered` is unavailable before 2019.** Any analysis or claim involving
+   counselor answer rates must be restricted to 2019–2021 or explicitly noted as
+   a partial-period analysis.
+
+2. **`call_abandoned` reflects caller behavior, not system failure.** This is
+   confirmed by the presence of call duration records for abandoned calls (median
+   24 seconds). It is appropriate to interpret rising abandonment rates as evidence
+   of system overload reducing crisis service accessibility.
+
+3. **Fast abandon is behaviorally distinct from sustained abandon.** These should
+   not be aggregated without justification. If reported together, note the
+   conceptual distinction.
+
+4. **Call volume is a conservative proxy for need.** Calls require working
+   telecommunications infrastructure. Post-storm drops in `num_calls` during the
+   acute phase (days 0–3) may reflect infrastructure disruption rather than
+   reduced need. This attenuation bias is directionally downward and should be
+   acknowledged in the Limitations section.
+
+5. **`pct_calls_cell` interpretation is indirect.** Rising mobile call share is
+   consistent with displacement but cannot be interpreted as direct evidence
+   without additional geographic data on caller location.
+
+---
+
+*Document prepared for internal research reference. Variable definitions sourced
+from `a_01_Lifeline_Descriptives.qmd` (Minor & Parks, 2023).*
