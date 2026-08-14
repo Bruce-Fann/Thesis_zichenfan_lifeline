@@ -28,22 +28,13 @@ library(readxl)
 
 ```
 
-```{r import aggregated}
+```{r import aggregated and storm}
 
 df_state <- read_csv("data/state_daily_lld_land.csv")
-range(df_state$date_string_est)
-nrow(df_state)
-
-```
-
-```{r import hurricane data}
 data(hurr_tracks)
-head(hurr_tracks)
-range(hurr_tracks$date)
 ```
 
 ```{r import population data }
-
 
 ## ── State FIPS lookup ─────────────────────────────────────────
 state_fips_lookup <- tibble(
@@ -191,8 +182,6 @@ df_clean |> summarise(
   n_miss_rate = sum(is.na(call_rate))
 )
 
-## ── Check states ──────────────────────────────────────────────
-df_state |> distinct(state_fips) |> arrange(state_fips)
 ```
 
 
