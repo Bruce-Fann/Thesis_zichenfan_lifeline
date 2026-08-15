@@ -213,9 +213,8 @@ storm_winds %>% distinct(storm_id) %>% nrow()
 glimpse(storm_winds)
 ```
 
-```{r about wind}
-
-
+```{r build wind data by state}
+n_distinct(state_winds$usa_atcf_id)
 ## Coverage summary
 storm_winds |>
   summarise(
@@ -242,82 +241,51 @@ state_winds <- storm_winds |>
   ) |>
   filter(year >= 2007 & year <= 2021) |>
   group_by(usa_atcf_id, state_fips) |>
-  summarise(
-    max_wind  = max(vmax_sust, na.rm=T),  ## state-level max wind (m/s)
-    date_max  = min(date_max, na.rm=T),   ## earliest peak date = landfall proxy
-    year      = first(year),
-    .groups   = "drop"
-  ) |>
-  ## only keep states with meaningful exposure
-  filter(max_wind >= 17.5)                ## >= 34 knots = tropical storm threshold
-
-## ── Add intensity category ────────────────────────────────────
-state_winds <- state_winds |>
-  mutate(intensity = case_when(
-    max_wind <  17.5              ~ "No storm",
-    max_wind >= 17.5 & max_wind < 32.9 ~ "TS",
-    max_wind >= 32.9 & max_wind < 49.4 ~ "Cat1-2",
-    max_wind >= 49.4              ~ "Cat3+"
-  ))
-
-## ── Check ─────────────────────────────────────────────────────
-state_winds |>
-  count(intensity) |>
-  mutate(pct = round(n/sum(n)*100, 1))
-
-state_winds |>
-  summarise(
-    n_storms = n_distinct(usa_atcf_id),
-    n_states = n_distinct(state_fips),
-    n_events = n()
-  )
-
-
-
-## Check actual year range in storm_winds
-storm_winds |>
-  mutate(year = year(date_time_max_wind)) |>
-  summarise(
-    min_year = min(year, na.rm=T),
-    max_year = max(year, na.rm=T),
-    n_storms = n_distinct(usa_atcf_id)
-  )
-
-## Check latest storms
-storm_winds |>
-  mutate(year = year(date_time_max_wind)) |>
-  filter(year >= 2019) |>
-  distinct(usa_atcf_id, year) |>
-  arrange(year)
-
-# storms and time range
-storm_winds %>%
-  summarise(
-    n_storms = n_distinct(usa_atcf_id),
-    n_counties = n_distinct(fips),
-    year_range = paste(
-      min(year(date_time_max_wind)),
-      max(year(date_time_max_wind)),
-      sep="-"
-    )
-  )
-# date
-class(storm_winds$date_time_max_wind)
-head(storm_winds$date_time_max_wind)
-
-
-storm_winds <- storm_winds %>%
-  mutate(
-    date_time_max_wind = ymd_hms(date_time_max_wind),
-    date_max_wind = as.Date(date_time_max_wind),
-    year_storm = year(date_time_max_wind)
-  )
-
-range(storm_winds$year_storm, na.rm=T)
-
+summarise(
+  max_wind = max(vmax_sust, na.rm = T),
+  date_max = date_max[which.max(vmax_sust)],  # date of peak-wind county
+      year = year(date_max[which.max(vmax_sust)]),
+  .groups  = "drop"
+) |>
+filter(max_wind >= 17.5)
 
 ```
 
+## event df building
+
+```{r build event df}
+# ── Build event-window dataset: one row per state × storm × day ──────────────
+df_event = state_winds |>
+  # Expand each state-storm to daily rows: day -14 to +60
+  mutate(date = map(date_max, \(d) seq(d - 14, d + 60, by = "day"))) |>
+  unnest(date) |>
+  mutate(
+    days_to_storm = as.integer(date - date_max),
+    # Three post-storm periods based on Wertis et al. (2023) peak timing
+    period = case_when(
+      days_to_storm <  0  ~ "pre",
+      days_to_storm <= 7  ~ "acute",
+      days_to_storm <= 28 ~ "short_term",
+      TRUE                ~ "delayed"
+    ) |> factor(levels = c("pre", "acute", "short_term", "delayed"))
+  ) |>
+  # Attach Lifeline outcomes from cleaned daily data
+  left_join(
+    df_clean |> select(state_fips, date, num_calls, call_rate,
+                       pct_calls_abandon, est_wait_duration_avg,
+                       population, dow),
+    by = c("state_fips", "date")
+  ) |>
+  filter(!is.na(num_calls))  # drop days outside Lifeline coverage
+
+# ── Verify ────────────────────────────────────────────────────────────────────
+df_event |> count(period)
+df_event |> summarise(
+  n_events = n_distinct(paste(usa_atcf_id, state_fips)),
+  n_states = n_distinct(state_fips),
+  n_rows   = n()
+)
+```
 
 
 
