@@ -271,8 +271,12 @@ df_event = state_winds |>
     ) |> factor(levels = c("pre", "acute", "short_term", "delayed"))
   ) |>
   left_join(
-    df_clean |> select(state_fips, date, num_calls, call_rate,
-                       pct_calls_abandon, est_wait_duration_avg,
+    df_clean |> select(state_fips, date, 
+                       num_calls, 
+                       call_rate,
+                       pct_calls_abandon,
+                       num_calls_abandon, 
+                       est_wait_duration_avg,
                        population, dow),
     by = c("state_fips", "date"),
     relationship = "many-to-many"   # silence warning, resolve below
@@ -336,6 +340,18 @@ df_event |>
   ) +
   theme_bw() +
   theme(strip.text = element_text(size = 11))
+
+df_event |>
+  summarise(
+    n_events      = n_distinct(paste(usa_atcf_id, state_fips)),
+    n_states      = n_distinct(state_fips),
+    n_storms      = n_distinct(usa_atcf_id),
+    mean_call_rate = mean(call_rate, na.rm = TRUE),
+    sd_call_rate   = sd(call_rate, na.rm = TRUE),
+    mean_abandon   = mean(pct_calls_abandon, na.rm = TRUE),
+    pct_TS         = mean(max_wind < 32.9) * 100,
+    pct_Cat        = mean(max_wind >= 32.9) * 100
+  )
 ```
 
 ##Q2&3
@@ -372,30 +388,30 @@ print(results_rq2)
 
 # ── RQ3: Storm exposure → call abandonment rate ────────────────
 # pct_calls_abandon is already a rate (%), gaussian is appropriate
+
 mod_rq3 = glm(
-  pct_calls_abandon ~ period +
+  num_calls_abandon ~ period +
     ns(date, df = 4 * yr_num) +
     factor(dow) +
     factor(state_fips),
-  family = gaussian(),
-  data   = df_event
+  family = quasipoisson(),
+  offset = log(num_calls),
+  data   = df_event |> filter(num_calls > 0)
 )
-
-coefs_rq3 = summary(mod_rq3)$coefficients
-
 
 # Extract β (percentage point change vs pre)
 coefs_rq3 = summary(mod_rq3)$coefficients
 
 results_rq3 = tibble(
   period = c("late_pre","acute", "short_term", "delayed"),
-  beta   = coefs_rq3[periods, "Estimate"],
-  lower  = coefs_rq3[periods, "Estimate"] - 1.96 * coefs_rq3[periods, "Std. Error"],
-  upper  = coefs_rq3[periods, "Estimate"] + 1.96 * coefs_rq3[periods, "Std. Error"],
+  IRR    = exp(coefs_rq3[periods, "Estimate"]),
+  lower  = exp(coefs_rq3[periods, "Estimate"] - 1.96 * coefs_rq3[periods, "Std. Error"]),
+  upper  = exp(coefs_rq3[periods, "Estimate"] + 1.96 * coefs_rq3[periods, "Std. Error"]),
   p      = coefs_rq3[periods, "Pr(>|t|)"]
 )
 
 print(results_rq3)
+
 
 ```
 

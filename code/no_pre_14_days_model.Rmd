@@ -1,0 +1,65 @@
+---
+title: "backup no pre 14 days model"
+author: "Zichen Fan"
+date: "2026-08-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# ── Year count for spline df (full study period) ──────────────
+yr_num = length(unique(year(df_event$date)))
+
+# ── RQ2: Storm exposure → crisis call rate ─────────────────────
+mod_rq2 = glm(
+  num_calls ~ period +
+    ns(date, df = 4 * yr_num) +   # long-term trend + seasonality
+    factor(dow) +                  # day-of-week effect
+    factor(state_fips),            # state fixed effects
+  family = quasipoisson(),
+  offset = log(population / 100000),
+  data   = df_event
+)
+
+# Extract IRR for each period vs pre
+coefs_rq2 = summary(mod_rq2)$coefficients
+periods   = c("periodacute", "periodshort_term", "perioddelayed")
+
+results_rq2 = tibble(
+  period = c("acute", "short_term", "delayed"),
+  IRR    = exp(coefs_rq2[periods, "Estimate"]),
+  lower  = exp(coefs_rq2[periods, "Estimate"] - 1.96 * coefs_rq2[periods, "Std. Error"]),
+  upper  = exp(coefs_rq2[periods, "Estimate"] + 1.96 * coefs_rq2[periods, "Std. Error"]),
+  p      = coefs_rq2[periods, "Pr(>|t|)"]
+)
+
+print(results_rq2)
+
+# ── RQ3: Storm exposure → call abandonment rate ────────────────
+# pct_calls_abandon is already a rate (%), gaussian is appropriate
+mod_rq3 = glm(
+  pct_calls_abandon ~ period +
+    ns(date, df = 4 * yr_num) +
+    factor(dow) +
+    factor(state_fips),
+  family = gaussian(),
+  data   = df_event
+)
+
+# Extract β (percentage point change vs pre)
+coefs_rq3 = summary(mod_rq3)$coefficients
+
+results_rq3 = tibble(
+  period = c("acute", "short_term", "delayed"),
+  beta   = coefs_rq3[periods, "Estimate"],
+  lower  = coefs_rq3[periods, "Estimate"] - 1.96 * coefs_rq3[periods, "Std. Error"],
+  upper  = coefs_rq3[periods, "Estimate"] + 1.96 * coefs_rq3[periods, "Std. Error"],
+  p      = coefs_rq3[periods, "Pr(>|t|)"]
+)
+
+print(results_rq3)
+```
+
