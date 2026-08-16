@@ -19,6 +19,7 @@ library(hurricaneexposuredata)
 library(tidycensus)
 library(tidyverse)
 library(readxl)
+library(splines) 
 
 ```
 
@@ -254,6 +255,9 @@ filter(max_wind >= 17.5)
 ## event df building
 
 ```{r build event df}
+
+# 0-60
+
 df_event = state_winds |>
   mutate(date = map(date_max, \(d) seq(d - 14, d + 60, by = "day"))) |>
   unnest(date) |>
@@ -278,6 +282,17 @@ df_event = state_winds |>
   group_by(state_fips, date) |>
   slice_min(abs(days_to_storm), n = 1, with_ties = FALSE) |>
   ungroup()
+
+# -14-60 (if included pre)
+df_event = df_event |>
+  mutate(period = case_when(
+    days_to_storm >= -14 & days_to_storm <= -8 ~ "early_pre",
+    days_to_storm >= -7  & days_to_storm <= -1 ~ "late_pre",
+    days_to_storm <=  7                        ~ "acute",
+    days_to_storm <= 28                        ~ "short_term",
+    TRUE                                       ~ "delayed"
+  ) |> factor(levels = c("early_pre", "late_pre",
+                          "acute", "short_term", "delayed")))
 
 # ── Verify ────────────────────────────────────────────────────────────────────
 df_event |> count(period)
@@ -322,5 +337,177 @@ df_event |>
   theme_bw() +
   theme(strip.text = element_text(size = 11))
 ```
+
+##Q2&3
+```{r}
+# ── Year count for spline df (full study period) ──────────────
+yr_num = length(unique(year(df_event$date)))
+
+# ── RQ2: Storm exposure → crisis call rate ─────────────────────
+mod_rq2 = glm(
+  num_calls ~ period +
+    ns(date, df = 4 * yr_num) +   # long-term trend + seasonality
+    factor(dow) +                  # day-of-week effect
+    factor(state_fips),            # state fixed effects
+  family = quasipoisson(),
+  offset = log(population / 100000),
+  data   = df_event
+)
+
+# Extract IRR for each period vs pre
+coefs_rq2 = summary(mod_rq2)$coefficients
+periods = c( "periodlate_pre","periodacute", 
+            "periodshort_term", "perioddelayed")
+
+results_rq2 = tibble(
+  period = c("late_pre","acute", "short_term", "delayed"),
+  IRR    = exp(coefs_rq2[periods, "Estimate"]),
+  lower  = exp(coefs_rq2[periods, "Estimate"] - 1.96 * coefs_rq2[periods, "Std. Error"]),
+  upper  = exp(coefs_rq2[periods, "Estimate"] + 1.96 * coefs_rq2[periods, "Std. Error"]),
+  p      = coefs_rq2[periods, "Pr(>|t|)"]
+)
+
+print(results_rq2)
+
+
+# ── RQ3: Storm exposure → call abandonment rate ────────────────
+# pct_calls_abandon is already a rate (%), gaussian is appropriate
+mod_rq3 = glm(
+  pct_calls_abandon ~ period +
+    ns(date, df = 4 * yr_num) +
+    factor(dow) +
+    factor(state_fips),
+  family = gaussian(),
+  data   = df_event
+)
+
+coefs_rq3 = summary(mod_rq3)$coefficients
+
+
+# Extract β (percentage point change vs pre)
+coefs_rq3 = summary(mod_rq3)$coefficients
+
+results_rq3 = tibble(
+  period = c("late_pre","acute", "short_term", "delayed"),
+  beta   = coefs_rq3[periods, "Estimate"],
+  lower  = coefs_rq3[periods, "Estimate"] - 1.96 * coefs_rq3[periods, "Std. Error"],
+  upper  = coefs_rq3[periods, "Estimate"] + 1.96 * coefs_rq3[periods, "Std. Error"],
+  p      = coefs_rq3[periods, "Pr(>|t|)"]
+)
+
+print(results_rq3)
+
+```
+
+##sensitivity analysis for period definition
+
+```{r sensiticity}
+# ── Sensitivity: truncate window to Day 0–30 ──────────────────
+df_event_30 = df_event |>
+  filter(days_to_storm >= -14 & days_to_storm <= 30) |>
+  filter(period != "delayed") |>
+  mutate(period = droplevels(period))
+
+# Re-run RQ2
+mod_rq2_s = glm(
+  num_calls ~ period +
+    ns(date, df = 4 * yr_num) +
+    factor(dow) +
+    factor(state_fips),
+  family = quasipoisson(),
+  offset = log(population / 100000),
+  data   = df_event_30
+)
+
+coefs_s = summary(mod_rq2_s)$coefficients
+periods_s = c("periodacute", "periodshort_term")
+
+results_rq2_s = tibble(
+  period = c("acute", "short_term"),
+  IRR    = exp(coefs_s[periods_s, "Estimate"]),
+  lower  = exp(coefs_s[periods_s, "Estimate"] - 1.96 * coefs_s[periods_s, "Std. Error"]),
+  upper  = exp(coefs_s[periods_s, "Estimate"] + 1.96 * coefs_s[periods_s, "Std. Error"]),
+  p      = coefs_s[periods_s, "Pr(>|t|)"]
+)
+
+print(results_rq2_s) 
+# Re-run RQ3
+mod_rq3_s = glm(
+  pct_calls_abandon ~ period +
+    ns(date, df = 4 * yr_num) +
+    factor(dow) +
+    factor(state_fips),
+  family = gaussian(),
+  data   = df_event_30
+)
+
+coefs_s3 = summary(mod_rq3_s)$coefficients
+
+results_rq3_s = tibble(
+  period = c("acute", "short_term"),
+  beta   = coefs_s3[periods_s, "Estimate"],
+  lower  = coefs_s3[periods_s, "Estimate"] - 1.96 * coefs_s3[periods_s, "Std. Error"],
+  upper  = coefs_s3[periods_s, "Estimate"] + 1.96 * coefs_s3[periods_s, "Std. Error"],
+  p      = coefs_s3[periods_s, "Pr(>|t|)"]
+)
+
+print(results_rq3_s)
+```
+
+## sensitivity (other tryings)
+```{r}
+# ── Full window spline: day -14 to +60 ────────────────────────
+mod_sensitivity2 = glm(
+  num_calls ~ ns(days_to_storm, df = 6) +   # df=4, wider range
+    ns(date, df = 4 * yr_num) +
+    factor(dow) +
+    factor(state_fips),
+  family = quasipoisson(),
+  offset = log(population / 100000),
+  data   = df_event                          # full window, no filter
+)
+
+newdata_full = data.frame(
+  days_to_storm = -14:60,
+  date          = rep(as.Date("2014-09-01"), 75),
+  dow           = rep(3L, 75),
+  state_fips    = rep("37", 75),
+  population    = rep(1e6, 75)
+)
+
+pred = predict(mod_sensitivity2,
+               newdata = newdata_full,
+               type    = "link") |> as.numeric()
+
+# Reference = Day -1 (last pre-storm day)
+ref_idx = which((-14:60) == -1)
+
+data.frame(
+  days_to_storm = -14:60,
+  IRR           = exp(pred - pred[ref_idx])
+) |>
+  ggplot(aes(days_to_storm, IRR)) +
+  geom_vline(xintercept =  0, linetype = "dashed",
+             colour = "red",  linewidth = 0.5) +
+  geom_hline(yintercept =  1, linetype = "dotted",
+             colour = "grey40") +
+  geom_line(colour = "steelblue", linewidth = 0.8) +
+  annotate("rect", xmin = 0,  xmax = 7,  ymin = -Inf, ymax = Inf,
+           alpha = 0.06, fill = "red") +
+  annotate("rect", xmin = 8,  xmax = 28, ymin = -Inf, ymax = Inf,
+           alpha = 0.06, fill = "orange") +
+  annotate("rect", xmin = 29, xmax = 60, ymin = -Inf, ymax = Inf,
+           alpha = 0.06, fill = "yellow") +
+  scale_x_continuous(breaks = seq(-14, 60, by = 7)) +
+  labs(
+    x       = "Days relative to storm (Day 0 = peak wind)",
+    y       = "IRR relative to Day −1",
+    title   = "Sensitivity: continuous lag structure (Day −14 to +60)",
+    caption = "Shading: red = acute (0–7), orange = short-term (8–28), yellow = delayed (29–60)."
+  ) +
+  theme_bw()
+```
+
+
 
 
