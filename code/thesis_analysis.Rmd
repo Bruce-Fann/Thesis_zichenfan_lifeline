@@ -20,6 +20,7 @@ library(tidycensus)
 library(tidyverse)
 library(readxl)
 library(splines) 
+library(gnm)
 
 ```
 
@@ -104,6 +105,7 @@ df_state |>
   group_by(year) %>%
      summarise(na_rate = mean(is.na(pct_calls_answered)))
 
+
 # check the data validity
 df_state %>%
   mutate(
@@ -132,6 +134,12 @@ df_state %>%
     .groups = "drop"
   ) %>%
   print(n = 25)
+
+## repeat
+df_state |>
+  count(state_fips, date_string_est) |>
+  filter(n > 1) |>
+  nrow()
 
 ## Which states are in Lifeline but NOT in storm_winds
 df_state |>
@@ -165,7 +173,7 @@ excluded_state = df_state |>
 
 ```{r df_state clean}
 
-territories <- c("60","66","69","78","80","72")
+territories <- c("60","66","69","78","80","72","11")
 df_clean <- df_state |>
   select(
     date_string_est, state_fips,
@@ -186,7 +194,7 @@ df_clean <- df_state |>
   filter(
     year >= 2007 & year <= 2021,           ## analysis window
     !state_fips %in% territories           ## remove territories + PR
-  ) |>
+  ) |>distinct(state_fips, date, .keep_all = TRUE) |>  # remove duplicate state-days
   left_join(pop_annual,
             by = c("state_fips", "year")) |>
   mutate(call_rate = num_calls / (population / 100000))
@@ -216,7 +224,6 @@ glimpse(storm_winds)
 ```
 
 ```{r build wind data by state}
-n_distinct(state_winds$usa_atcf_id)
 ## Coverage summary
 storm_winds |>
   summarise(
@@ -294,11 +301,85 @@ df_event |> summarise(
   n_rows   = n()
 )
 
+# full df for the model
+exposed_states = df_event |>
+  distinct(state_fips) |>
+  pull(state_fips)
+
+df_full = df_clean |>
+  filter(state_fips %in% exposed_states) |>  # 31state
+  left_join(
+    df_event |>
+      filter(period %in% c("late_pre", "acute",
+                            "short_term", "delayed")) |>
+      distinct(state_fips, date, period),
+    by = c("state_fips", "date")
+  ) |>
+  mutate(
+    period = replace_na(as.character(period), "unexposed") |>
+      factor(levels = c("unexposed", "late_pre", "acute",
+                        "short_term", "delayed"))
+  )
+
+
+exposed_states = df_event |>
+  distinct(state_fips) |>
+  pull(state_fips)
+
+# ── Build full panel with exposure labels ──────────────────────
+df_full = df_clean |>
+  filter(state_fips %in% exposed_states) |>       # storm-exposed states only
+  left_join(
+    df_event |>
+      filter(period %in% c("late_pre", "acute",
+                            "short_term", "delayed")) |>
+      distinct(state_fips, date, period),          # attach storm period labels
+    by = c("state_fips", "date")
+  ) |>
+  mutate(
+    period = replace_na(as.character(period), "unexposed") |>
+      factor(levels = c("unexposed", "late_pre", "acute",
+                        "short_term", "delayed"))  # unexposed = reference
+  )
+
+df_full |> count(period)
+df_full |> summarise(
+  n_states = n_distinct(state_fips),
+  n_rows   = n(),
+  years    = paste(min(year), max(year), sep = "-")
+)
 ```
 
 # Examine calls data
 
 ```{r lifeline call data explortation}
+
+df_clean |>
+     filter(state_fips %in% exposed_states) |>
+     count(state_fips, date) |>
+     filter(n > 1) |> glimpse()
+# distribution
+summary(df_clean[, c("num_calls", "call_rate", 
+                      "pct_calls_abandon", 
+                      "est_wait_duration_avg")])
+
+# yearly mean
+df_clean |>
+  group_by(year) |>
+  summarise(
+    mean_calls    = mean(num_calls,            na.rm = TRUE),
+    mean_rate     = mean(call_rate,            na.rm = TRUE),
+    mean_abandon  = mean(pct_calls_abandon,    na.rm = TRUE),
+    mean_wait     = mean(est_wait_duration_avg, na.rm = TRUE)
+  ) |> print(n = 20)
+
+# month mean
+df_clean |>
+  group_by(month) |>
+  summarise(
+    mean_rate    = mean(call_rate,         na.rm = TRUE),
+    mean_abandon = mean(pct_calls_abandon, na.rm = TRUE)
+  ) |> print(n = 12)
 # distribution
 summary(df_event[, c("num_calls", "call_rate", 
                       "pct_calls_abandon", 
@@ -334,7 +415,6 @@ df_event |>
   summarise(
     call_rate         = mean(call_rate,          na.rm = TRUE),
     pct_calls_abandon = mean(pct_calls_abandon,  na.rm = TRUE),
-    est_wait_duration = mean(est_wait_duration_avg, na.rm = TRUE),
     .groups = "drop"
   ) |>
   pivot_longer(-days_to_storm, names_to = "metric", values_to = "value") |>
@@ -359,235 +439,191 @@ df_event |>
   theme_bw() +
   theme(strip.text = element_text(size = 11))
 
-df_event |>
-  summarise(
-    n_events      = n_distinct(paste(usa_atcf_id, state_fips)),
-    n_states      = n_distinct(state_fips),
-    n_storms      = n_distinct(usa_atcf_id),
-    mean_call_rate = mean(call_rate, na.rm = TRUE),
-    sd_call_rate   = sd(call_rate, na.rm = TRUE),
-    mean_abandon   = mean(pct_calls_abandon, na.rm = TRUE),
-    pct_TS         = mean(max_wind < 32.9) * 100,
-    pct_Cat        = mean(max_wind >= 32.9) * 100
-  )
-
-df_event |>
-  group_by(usa_atcf_id, state_fips) |>
-  mutate(
-    call_dev    = call_rate - 
-                  mean(call_rate[days_to_storm < 0], na.rm = TRUE),
-    abandon_dev = pct_calls_abandon - 
-                  mean(pct_calls_abandon[days_to_storm < 0], na.rm = TRUE),
-    wait_dev    = est_wait_duration_avg - 
-                  mean(est_wait_duration_avg[days_to_storm < 0], na.rm = TRUE)
-  ) |>
-  ungroup() |>
-  group_by(days_to_storm) |>
-  summarise(
-    call_rate         = mean(call_dev,    na.rm = TRUE),
-    pct_calls_abandon = mean(abandon_dev, na.rm = TRUE),
-    est_wait_duration = mean(wait_dev,    na.rm = TRUE),
-    .groups = "drop"
-  ) |>
-  pivot_longer(-days_to_storm,
-               names_to  = "metric",
-               values_to = "value") |>
-  mutate(metric = factor(metric,
-    levels = c("call_rate", "pct_calls_abandon", "est_wait_duration"),
-    labels = c("Call rate deviation (per 100k)",
-               "Abandonment rate deviation",
-               "Wait duration deviation (min)"))) |>
-  ggplot(aes(x = days_to_storm, y = value)) +
-  geom_hline(yintercept = 0, colour = "gray60",
-             linewidth = 0.5) +
-  geom_vline(xintercept = 0, linetype = "dashed",
-             colour = "red", linewidth = 0.5) +
-  geom_line(colour = "steelblue", linewidth = 0.8) +
-  geom_smooth(method = "loess", span = 0.3,
-              colour = "navy", se = TRUE,
-              linewidth = 0.5) +
-  facet_wrap(~ metric, scales = "free_y", ncol = 1) +
-  scale_x_continuous(breaks = seq(-14, 60, by = 7)) +
-  labs(
-    x       = "Days relative to storm (Day 0 = peak wind)",
-    y       = NULL,
-    title   = "Deviation from pre-storm baseline in crisis hotline metrics",
-    caption = "Pooled mean deviation across 214 state-storm events, 2007-2021.\nY=0 represents each event's own pre-storm mean. Red dashed line = Day 0."
-  ) +
-  theme_bw() +
-  theme(strip.text = element_text(size = 11))
 ```
 
-##Q2&3
-```{r}
-# ── Year count for spline df (full study period) ──────────────
-yr_num = length(unique(year(df_event$date)))
+## Q2&3 Analysis
+```{r Q23}
+# ── Add stratum: state × year × month ─────────────────────────
+df_full = df_full |>
+  mutate(stratum = paste(state_fips, year, month, sep = "_"))
 
-# ── RQ2: Storm exposure → crisis call rate ─────────────────────
-mod_rq2 = glm(
-  num_calls ~ period +
-    ns(date, df = 4 * yr_num) +   # long-term trend + seasonality
-    factor(dow) +                  # day-of-week effect
-    factor(state_fips),            # state fixed effects
-  family = quasipoisson(),
-  offset = log(population / 100000),
-  data   = df_event
+# ── RQ2 ───────────────────────────────────────────────────────
+mod_rq2 = gnm(
+  num_calls ~ period + factor(dow),
+  eliminate = factor(stratum),
+  family    = quasipoisson(),
+  offset    = log(population / 100000),
+  data      = df_full
 )
 
-# Extract IRR for each period vs pre
-coefs_rq2 = summary(mod_rq2)$coefficients
-periods = c( "periodlate_pre","periodacute", 
+# ── RQ3 ───────────────────────────────────────────────────────
+mod_rq3 = gnm(
+  num_calls_abandon ~ period + factor(dow),
+  eliminate = factor(stratum),
+  family    = quasipoisson(),
+  offset    = log(num_calls),
+  data      = df_full |> filter(num_calls > 0, year >= 2013)
+)
+
+# ── Extract results ────────────────────────────────────────────
+coefs_rq2 = summary(mod_rq2_cc)$coefficients
+coefs_rq3 = summary(mod_rq3_cc)$coefficients
+
+periods = c("periodlate_pre", "periodacute",
             "periodshort_term", "perioddelayed")
 
 results_rq2 = tibble(
-  period = c("late_pre","acute", "short_term", "delayed"),
-  IRR    = exp(coefs_rq2[periods, "Estimate"]),
-  lower  = exp(coefs_rq2[periods, "Estimate"] - 1.96 * coefs_rq2[periods, "Std. Error"]),
-  upper  = exp(coefs_rq2[periods, "Estimate"] + 1.96 * coefs_rq2[periods, "Std. Error"]),
-  p      = coefs_rq2[periods, "Pr(>|t|)"]
+  period = c("late_pre", "acute", "short_term", "delayed"),
+  IRR    = exp(coefs_rq2_cc[periods, "Estimate"]),
+  lower  = exp(coefs_rq2_cc[periods, "Estimate"] -
+               1.96 * coefs_rq2_cc[periods, "Std. Error"]),
+  upper  = exp(coefs_rq2_cc[periods, "Estimate"] +
+               1.96 * coefs_rq2_cc[periods, "Std. Error"]),
+  p      = coefs_rq2_cc[periods, "Pr(>|t|)"]
 )
-
-print(results_rq2)
-
-
-# ── RQ3: Storm exposure → call abandonment rate ────────────────
-# pct_calls_abandon is already a rate (%), gaussian is appropriate
-
-mod_rq3 = glm(
-  num_calls_abandon ~ period +
-    ns(date, df = 4 * yr_num) +
-    factor(dow) +
-    factor(state_fips),
-  family = quasipoisson(),
-  offset = log(num_calls),
-  data   = df_event |> filter(num_calls > 0)
-)
-
-# Extract β (percentage point change vs pre)
-coefs_rq3 = summary(mod_rq3)$coefficients
 
 results_rq3 = tibble(
-  period = c("late_pre","acute", "short_term", "delayed"),
-  IRR    = exp(coefs_rq3[periods, "Estimate"]),
-  lower  = exp(coefs_rq3[periods, "Estimate"] - 1.96 * coefs_rq3[periods, "Std. Error"]),
-  upper  = exp(coefs_rq3[periods, "Estimate"] + 1.96 * coefs_rq3[periods, "Std. Error"]),
-  p      = coefs_rq3[periods, "Pr(>|t|)"]
+  period = c("late_pre", "acute", "short_term", "delayed"),
+  IRR    = exp(coefs_rq3_cc[periods, "Estimate"]),
+  lower  = exp(coefs_rq3_cc[periods, "Estimate"] -
+               1.96 * coefs_rq3_cc[periods, "Std. Error"]),
+  upper  = exp(coefs_rq3_cc[periods, "Estimate"] +
+               1.96 * coefs_rq3_cc[periods, "Std. Error"]),
+  p      = coefs_rq3_cc[periods, "Pr(>|t|)"]
 )
 
-print(results_rq3)
-
+cat("=== RQ2 case-crossover ===\n"); print(results_rq2)
+cat("=== RQ3 case-crossover ===\n"); print(results_rq3)
 
 ```
 
 ##sensitivity analysis for period definition
 
 ```{r sensiticity}
-# ── Sensitivity: truncate window to Day 0–30 ──────────────────
-df_event_30 = df_event |>
-  filter(days_to_storm >= -14 & days_to_storm <= 30) |>
-  filter(period != "delayed") |>
-  mutate(period = droplevels(period))
+# ══════════════════════════════════════════════════════════════
+# SENSITIVITY ANALYSIS 1: continuous spline of days post-storm
+# Purpose: verify that period boundary choices do not drive
+#          conclusions (no arbitrary cutpoints assumed)
+# ══════════════════════════════════════════════════════════════
 
-# Re-run RQ2
-mod_rq2_s = glm(
-  num_calls ~ period +
+yr_num = length(unique(df_full$year))
+ss1_mod = glm(
+  num_calls ~ ns(days_to_storm, df = 4) +
     ns(date, df = 4 * yr_num) +
     factor(dow) +
     factor(state_fips),
   family = quasipoisson(),
   offset = log(population / 100000),
-  data   = df_event_30
+  data   = df_event |> filter(days_to_storm >= 0)
 )
 
-coefs_s = summary(mod_rq2_s)$coefficients
-periods_s = c("periodacute", "periodshort_term")
+ss1_ref_date = as.Date("2014-09-01")
 
-results_rq2_s = tibble(
-  period = c("acute", "short_term"),
-  IRR    = exp(coefs_s[periods_s, "Estimate"]),
-  lower  = exp(coefs_s[periods_s, "Estimate"] - 1.96 * coefs_s[periods_s, "Std. Error"]),
-  upper  = exp(coefs_s[periods_s, "Estimate"] + 1.96 * coefs_s[periods_s, "Std. Error"]),
-  p      = coefs_s[periods_s, "Pr(>|t|)"]
+ss1_newdata = data.frame(
+  days_to_storm = 0:60,
+  date          = rep(ss1_ref_date, 61),
+  dow           = rep(3L, 61),
+  state_fips    = rep("37", 61),
+  population    = rep(1e6, 61)
 )
 
-print(results_rq2_s) 
-# Re-run RQ3
-mod_rq3_s = glm(
-  pct_calls_abandon ~ period +
-    ns(date, df = 4 * yr_num) +
-    factor(dow) +
-    factor(state_fips),
-  family = gaussian(),
-  data   = df_event_30
+ss1_pred = predict(ss1_mod,
+                   newdata = ss1_newdata,
+                   type    = "link") |> as.numeric()
+
+ss1_results = data.frame(
+  days_to_storm = 0:60,
+  IRR           = exp(ss1_pred - ss1_pred[1])   # relative to Day 0
 )
 
-coefs_s3 = summary(mod_rq3_s)$coefficients
-
-results_rq3_s = tibble(
-  period = c("acute", "short_term"),
-  beta   = coefs_s3[periods_s, "Estimate"],
-  lower  = coefs_s3[periods_s, "Estimate"] - 1.96 * coefs_s3[periods_s, "Std. Error"],
-  upper  = coefs_s3[periods_s, "Estimate"] + 1.96 * coefs_s3[periods_s, "Std. Error"],
-  p      = coefs_s3[periods_s, "Pr(>|t|)"]
-)
-
-print(results_rq3_s)
-```
-
-## sensitivity (other tryings)
-```{r}
-# ── Full window spline: day -14 to +60 ────────────────────────
-mod_sensitivity2 = glm(
-  num_calls ~ ns(days_to_storm, df = 6) +   # df=4, wider range
-    ns(date, df = 4 * yr_num) +
-    factor(dow) +
-    factor(state_fips),
-  family = quasipoisson(),
-  offset = log(population / 100000),
-  data   = df_event                          # full window, no filter
-)
-
-newdata_full = data.frame(
-  days_to_storm = -14:60,
-  date          = rep(as.Date("2014-09-01"), 75),
-  dow           = rep(3L, 75),
-  state_fips    = rep("37", 75),
-  population    = rep(1e6, 75)
-)
-
-pred = predict(mod_sensitivity2,
-               newdata = newdata_full,
-               type    = "link") |> as.numeric()
-
-# Reference = Day -1 (last pre-storm day)
-ref_idx = which((-14:60) == -1)
-
-data.frame(
-  days_to_storm = -14:60,
-  IRR           = exp(pred - pred[ref_idx])
-) |>
-  ggplot(aes(days_to_storm, IRR)) +
-  geom_vline(xintercept =  0, linetype = "dashed",
-             colour = "red",  linewidth = 0.5) +
-  geom_hline(yintercept =  1, linetype = "dotted",
-             colour = "grey40") +
+# Plot
+ggplot(ss1_results, aes(days_to_storm, IRR)) +
   geom_line(colour = "steelblue", linewidth = 0.8) +
-  annotate("rect", xmin = 0,  xmax = 7,  ymin = -Inf, ymax = Inf,
-           alpha = 0.06, fill = "red") +
-  annotate("rect", xmin = 8,  xmax = 28, ymin = -Inf, ymax = Inf,
-           alpha = 0.06, fill = "orange") +
-  annotate("rect", xmin = 29, xmax = 60, ymin = -Inf, ymax = Inf,
-           alpha = 0.06, fill = "yellow") +
-  scale_x_continuous(breaks = seq(-14, 60, by = 7)) +
+  geom_hline(yintercept = 1, linetype = "dashed",
+             colour = "red") +
   labs(
-    x       = "Days relative to storm (Day 0 = peak wind)",
-    y       = "IRR relative to Day −1",
-    title   = "Sensitivity: continuous lag structure (Day −14 to +60)",
-    caption = "Shading: red = acute (0–7), orange = short-term (8–28), yellow = delayed (29–60)."
+    x       = "Days post-storm",
+    y       = "IRR relative to Day 0",
+    title   = "Sensitivity 1: continuous lag structure post-storm",
+    caption = "Natural spline df=3; no period boundaries assumed."
   ) +
   theme_bw()
-```
 
+
+# ══════════════════════════════════════════════════════════════
+# SENSITIVITY ANALYSIS 2: restrict to Cat1+ storms only
+# Purpose: test whether effects are driven by weak TS-strength
+#          storms or present in more intense events
+# Threshold: max_wind >= 32.9 m/s (Cat1+ = 64 knots)
+# ══════════════════════════════════════════════════════════════
+
+# Exposed days from Cat1+ storms only
+ss2_exposed = df_event |>
+  filter(
+    period %in% c("late_pre", "acute", "short_term", "delayed"),
+    max_wind >= 32.9    # Cat1+ threshold
+  ) |>
+  distinct(state_fips, date, period)
+
+# Full panel with Cat1+ exposure labels
+ss2_df = df_clean |>
+  filter(state_fips %in% exposed_states) |>
+  left_join(ss2_exposed, by = c("state_fips", "date")) |>
+  mutate(
+    period  = replace_na(as.character(period), "unexposed") |>
+      factor(levels = c("unexposed", "late_pre", "acute",
+                        "short_term", "delayed")),
+    stratum = paste(state_fips, year, month, sep = "_")
+  )
+
+# Check exposed days
+ss2_df |> count(period)
+
+# RQ2: Cat1+ only
+ss2_mod_rq2 = gnm(
+  num_calls ~ period + factor(dow),
+  eliminate = factor(stratum),
+  family    = quasipoisson(),
+  offset    = log(population / 100000),
+  data      = ss2_df
+)
+
+ss2_coefs_rq2 = summary(ss2_mod_rq2)$coefficients
+
+ss2_results_rq2 = tibble(
+  period = c("late_pre", "acute", "short_term", "delayed"),
+  IRR    = exp(ss2_coefs_rq2[periods, "Estimate"]),
+  lower  = exp(ss2_coefs_rq2[periods, "Estimate"] -
+               1.96 * ss2_coefs_rq2[periods, "Std. Error"]),
+  upper  = exp(ss2_coefs_rq2[periods, "Estimate"] +
+               1.96 * ss2_coefs_rq2[periods, "Std. Error"]),
+  p      = ss2_coefs_rq2[periods, "Pr(>|t|)"]
+)
+
+# RQ3: Cat1+ only
+ss2_mod_rq3 = gnm(
+  num_calls_abandon ~ period + factor(dow),
+  eliminate = factor(stratum),
+  family    = quasipoisson(),
+  offset    = log(num_calls),
+  data      = ss2_df |> filter(num_calls > 0, year >= 2013)
+)
+
+ss2_coefs_rq3 = summary(ss2_mod_rq3)$coefficients
+
+ss2_results_rq3 = tibble(
+  period = c("late_pre", "acute", "short_term", "delayed"),
+  IRR    = exp(ss2_coefs_rq3[periods, "Estimate"]),
+  lower  = exp(ss2_coefs_rq3[periods, "Estimate"] -
+               1.96 * ss2_coefs_rq3[periods, "Std. Error"]),
+  upper  = exp(ss2_coefs_rq3[periods, "Estimate"] +
+               1.96 * ss2_coefs_rq3[periods, "Std. Error"]),
+  p      = ss2_coefs_rq3[periods, "Pr(>|t|)"]
+)
+
+cat("=== SS2 RQ2: Cat1+ only ===\n"); print(ss2_results_rq2)
+cat("=== SS2 RQ3: Cat1+ only ===\n"); print(ss2_results_rq3)
+```
 
 
 
