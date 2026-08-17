@@ -201,8 +201,9 @@ df_clean |> summarise(
 )
 
 glimpse(df_clean)
-```
 
+
+```
 
 ##Wind Data Exploration
 
@@ -256,47 +257,34 @@ filter(max_wind >= 17.5)
 
 ```{r build event df}
 
-# 0-60
-
 df_event = state_winds |>
   mutate(date = map(date_max, \(d) seq(d - 14, d + 60, by = "day"))) |>
   unnest(date) |>
   mutate(
     days_to_storm = as.integer(date - date_max),
+    year          = year(date),             
     period = case_when(
-      days_to_storm <  0  ~ "pre",
-      days_to_storm <= 7  ~ "acute",
-      days_to_storm <= 28 ~ "short_term",
-      TRUE                ~ "delayed"
-    ) |> factor(levels = c("pre", "acute", "short_term", "delayed"))
+      days_to_storm >= -14 & days_to_storm <= -8 ~ "early_pre",
+      days_to_storm >= -7  & days_to_storm <= -1 ~ "late_pre",
+      days_to_storm <=  7                        ~ "acute",
+      days_to_storm <= 28                        ~ "short_term",
+      TRUE                                       ~ "delayed"
+    ) |> factor(levels = c("early_pre", "late_pre",
+                            "acute", "short_term", "delayed"))
   ) |>
   left_join(
-    df_clean |> select(state_fips, date, 
-                       num_calls, 
-                       call_rate,
-                       pct_calls_abandon,
-                       num_calls_abandon, 
+    df_clean |> select(state_fips, date, month,
+                       num_calls, call_rate,
+                       pct_calls_abandon, num_calls_abandon,
                        est_wait_duration_avg,
                        population, dow),
     by = c("state_fips", "date"),
-    relationship = "many-to-many"   # silence warning, resolve below
+    relationship = "many-to-many"
   ) |>
   filter(!is.na(num_calls)) |>
-  # Keep only the storm whose Day 0 is closest to each state-day
   group_by(state_fips, date) |>
   slice_min(abs(days_to_storm), n = 1, with_ties = FALSE) |>
-  ungroup()
-
-# -14-60 (if included pre)
-df_event = df_event |>
-  mutate(period = case_when(
-    days_to_storm >= -14 & days_to_storm <= -8 ~ "early_pre",
-    days_to_storm >= -7  & days_to_storm <= -1 ~ "late_pre",
-    days_to_storm <=  7                        ~ "acute",
-    days_to_storm <= 28                        ~ "short_term",
-    TRUE                                       ~ "delayed"
-  ) |> factor(levels = c("early_pre", "late_pre",
-                          "acute", "short_term", "delayed")))
+  ungroup() 
 
 # ── Verify ────────────────────────────────────────────────────────────────────
 df_event |> count(period)
@@ -305,6 +293,36 @@ df_event |> summarise(
   n_states = n_distinct(state_fips),
   n_rows   = n()
 )
+
+```
+
+# Examine calls data
+
+```{r lifeline call data explortation}
+# distribution
+summary(df_event[, c("num_calls", "call_rate", 
+                      "pct_calls_abandon", 
+                      "est_wait_duration_avg")])
+
+# yearly mean
+df_event |>
+  group_by(year) |>
+  summarise(
+    mean_calls    = mean(num_calls,            na.rm = TRUE),
+    mean_rate     = mean(call_rate,            na.rm = TRUE),
+    mean_abandon  = mean(pct_calls_abandon,    na.rm = TRUE),
+    mean_wait     = mean(est_wait_duration_avg, na.rm = TRUE)
+  ) |> print(n = 20)
+
+# month mean
+df_event |>
+  group_by(month) |>
+  summarise(
+    mean_rate    = mean(call_rate,         na.rm = TRUE),
+    mean_abandon = mean(pct_calls_abandon, na.rm = TRUE)
+  ) |> print(n = 12)
+
+
 ```
 
 # analysis & plot
@@ -352,6 +370,52 @@ df_event |>
     pct_TS         = mean(max_wind < 32.9) * 100,
     pct_Cat        = mean(max_wind >= 32.9) * 100
   )
+
+df_event |>
+  group_by(usa_atcf_id, state_fips) |>
+  mutate(
+    call_dev    = call_rate - 
+                  mean(call_rate[days_to_storm < 0], na.rm = TRUE),
+    abandon_dev = pct_calls_abandon - 
+                  mean(pct_calls_abandon[days_to_storm < 0], na.rm = TRUE),
+    wait_dev    = est_wait_duration_avg - 
+                  mean(est_wait_duration_avg[days_to_storm < 0], na.rm = TRUE)
+  ) |>
+  ungroup() |>
+  group_by(days_to_storm) |>
+  summarise(
+    call_rate         = mean(call_dev,    na.rm = TRUE),
+    pct_calls_abandon = mean(abandon_dev, na.rm = TRUE),
+    est_wait_duration = mean(wait_dev,    na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  pivot_longer(-days_to_storm,
+               names_to  = "metric",
+               values_to = "value") |>
+  mutate(metric = factor(metric,
+    levels = c("call_rate", "pct_calls_abandon", "est_wait_duration"),
+    labels = c("Call rate deviation (per 100k)",
+               "Abandonment rate deviation",
+               "Wait duration deviation (min)"))) |>
+  ggplot(aes(x = days_to_storm, y = value)) +
+  geom_hline(yintercept = 0, colour = "gray60",
+             linewidth = 0.5) +
+  geom_vline(xintercept = 0, linetype = "dashed",
+             colour = "red", linewidth = 0.5) +
+  geom_line(colour = "steelblue", linewidth = 0.8) +
+  geom_smooth(method = "loess", span = 0.3,
+              colour = "navy", se = TRUE,
+              linewidth = 0.5) +
+  facet_wrap(~ metric, scales = "free_y", ncol = 1) +
+  scale_x_continuous(breaks = seq(-14, 60, by = 7)) +
+  labs(
+    x       = "Days relative to storm (Day 0 = peak wind)",
+    y       = NULL,
+    title   = "Deviation from pre-storm baseline in crisis hotline metrics",
+    caption = "Pooled mean deviation across 214 state-storm events, 2007-2021.\nY=0 represents each event's own pre-storm mean. Red dashed line = Day 0."
+  ) +
+  theme_bw() +
+  theme(strip.text = element_text(size = 11))
 ```
 
 ##Q2&3
