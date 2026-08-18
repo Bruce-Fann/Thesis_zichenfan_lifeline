@@ -13,7 +13,6 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r load package}
 library(readr)
-library(tidyverse)
 library(hurricaneexposure)
 library(hurricaneexposuredata)
 library(tidycensus)
@@ -34,7 +33,6 @@ library(ggspatial)
 ```{r import aggregated and storm}
 
 df_state <- read_csv("data/state_daily_lld.csv")
-data(hurr_tracks)
 ```
 
 ```{r import population data }
@@ -101,10 +99,6 @@ pop_annual |> summarise(
 # 3. Calls data cleanining
 
 ```{r check agregatred data range}
-
-df_state %>%
-  group_by(year = lubridate::year(date_string_est)) %>%
-  summarise(pct_na_answered = mean(is.na(pct_calls_answered)))
 
 df_state |>
   mutate(year = as.integer(substr(date_string_est, 1, 4)))|>
@@ -285,7 +279,7 @@ df_event = state_winds |>
       days_to_storm <= 28                        ~ "short_term",
       TRUE                                       ~ "delayed"
     ) |> factor(levels = c("early_pre", "late_pre",
-                            "acute", "short_term", "delayed"))
+                            "acute", "short_term","delayed"))
   ) |>
   left_join(
     df_clean |> select(state_fips, date, month,
@@ -407,7 +401,7 @@ panel_a = state_winds |>
   pivot_longer(everything(), names_to = "Characteristic", values_to = "Value")
 
 # calls data
-panel_b = df_full |>
+panel_b = df_full|>
   summarise(
     `State-days (n)`                     = as.character(n()),
     `States (n)`                         = as.character(n_distinct(state_fips)),
@@ -553,6 +547,21 @@ results_rq3 = tibble(
 
 cat("=== RQ2 case-crossover ===\n"); print(results_rq2)
 cat("=== RQ3 case-crossover ===\n"); print(results_rq3)
+
+bind_rows(
+  results_rq2 |> mutate(outcome = "Call rate (IRR)"),
+  results_rq3 |> mutate(outcome = "Abandonment rate (IRR)")
+) |>
+  mutate(
+    result = sprintf("%.2f (%.2f–%.2f)", IRR, lower, upper),
+    p      = case_when(
+      p < 0.001 ~ "<0.001",
+      p < 0.01  ~ "<0.01",
+      p < 0.05  ~ sprintf("%.3f", p),
+      TRUE      ~ sprintf("%.2f", p)
+    )
+  ) |>
+  select(outcome, period, result, p)
 
 ```
 
@@ -704,14 +713,16 @@ storm_count = state_winds |>
 states_sf = states(cb = TRUE, resolution = "20m") |>
   filter(!STATEFP %in% c("02","15","60","66","69","72","78")) |>
   mutate(state_fips = STATEFP) |>
-  left_join(storm_count, by = "state_fips")|>
-  mutate(
+  left_join(storm_count, by = "state_fips") |>
+  mutate(n_storms = replace_na(n_storms, 0),
+         exposed  = n_storms > 0,   # NA → 0
     storm_bin = cut(n_storms,
-                    breaks = c(0, 3, 7, 12, 18, Inf),
-                    labels = c("1–3", "4–7", "8–12", "13–18", "19+"),
-                    include.lowest = FALSE)
+                    breaks        = c(-1, 0, 3, 7, 12, 18, Inf),
+                    labels        = c("0", "1–3", "4–7",
+                                      "8–12", "13–18", "19+"),
+                    include.lowest = TRUE)
   )
-
+national_border = states_sf |> sf::st_union()
 ggplot() +
   geom_sf(data      = states_sf,
           aes(fill  = storm_bin),
@@ -722,7 +733,8 @@ ggplot() +
           colour    = "black",
           linewidth = 0.7) +
   scale_fill_manual(
-    values   = c("1–3"   = "#fcbba1",
+    values   = c("0"      = "#d9d9d9",
+                 "1–3"   = "#fcbba1",
                  "4–7"   = "#fb6a4a",
                  "8–12"  = "#de2d26",
                  "13–18" = "#a50f15",
@@ -734,7 +746,7 @@ ggplot() +
   ) +
   labs(
     title   = "Tropical cyclone exposures by state, 2007–2021",
-    caption = "Source: hurricaneexposuredata R package (Anderson et al., 2020).\nN = 58 storms with peak sustained wind ≥17.5 m/s. White:Storm exposure Data =  NA  ."
+    caption = "Source: hurricaneexposuredata R package (Anderson et al., 2020).\nN = 58 storms with peak sustained wind ≥17.5 m/s. Gray:Storm exposure Data =  NA  ."
   ) +
   theme_void() +
   theme(
@@ -746,4 +758,120 @@ ggplot() +
   )
 ```
 
+# 9. Other Tables to be included
+
+```{r}
+
+# ── Table 2: Main analysis results (RQ2 + RQ3) ────────────────
+table2 = bind_rows(
+  results_rq2 |>
+    mutate(
+      outcome = "Crisis call rate",
+      est_fmt = sprintf("%.2f (%.2f–%.2f)", IRR, lower, upper),
+      p_fmt   = case_when(
+        p < 0.001 ~ "<0.001",
+        p < 0.01  ~ sprintf("%.3f", p),
+        TRUE      ~ sprintf("%.2f", p)
+      )
+    ) |>
+    select(outcome, period, est_fmt, p_fmt),
+  results_rq3 |>
+    mutate(
+      outcome = "Call abandonment rate",
+      est_fmt = sprintf("%.2f (%.2f–%.2f)", IRR, lower, upper),
+      p_fmt   = case_when(
+        p < 0.001 ~ "<0.001",
+        p < 0.01  ~ sprintf("%.3f", p),
+        TRUE      ~ sprintf("%.2f", p)
+      )
+    ) |>
+    select(outcome, period, est_fmt, p_fmt)
+) |>
+  mutate(period = factor(period,
+    levels = c("late_pre", "acute", "short_term", "delayed"),
+    labels = c("Pre-storm (days −7 to −1)",
+               "Acute (days 0–7)",
+               "Short-term (days 8–28)",
+               "Delayed (days 29–60)"))) |>
+  pivot_wider(names_from  = outcome,
+              values_from = c(est_fmt, p_fmt),
+              names_glue  = "{outcome}_{.value}")
+
+table2 |>
+  gt(rowname_col = "period") |>
+  tab_header(
+    title    = "Table 2. Association between tropical cyclone exposure and crisis hotline outcomes",
+    subtitle = "Time-stratified conditional Poisson regression, 32 storm-affected states, 2007–2021"
+  ) |>
+  cols_label(
+    `Crisis call rate_est_fmt`       = "IRR (95% CI)",
+    `Crisis call rate_p_fmt`         = "p-value",
+    `Call abandonment rate_est_fmt`  = "IRR (95% CI)",
+    `Call abandonment rate_p_fmt`    = "p-value"
+  ) |>
+  tab_spanner(label = "Crisis call rate",       columns = 2:3) |>
+  tab_spanner(label = "Call abandonment rate",  columns = 4:5) |>
+  tab_footnote(
+    "IRR = incidence rate ratio. Reference: unexposed state-days within the same state × year × month stratum. Models adjusted for day of week. Abandonment rate analysis restricted to 2013–2021."
+  ) |>
+  tab_options(table.font.size = 12, heading.align = "left")
+
+
+# ── Table A1: Sensitivity analyses ────────────────────────────
+# Standardise period labels across all analyses first
+main = results_rq2|>
+  mutate(
+    period  = factor(period,
+      levels = c("late_pre","acute","short_term","delayed"),
+      labels = c("Pre-storm (−7 to −1)",
+                 "Acute (0–7)",
+                 "Short-term (8–28)",
+                 "Delayed (29–60)")),
+    Main = sprintf("%.2f (%.2f–%.2f)", IRR, lower, upper)
+  ) |> select(period, Main)
+
+ss1 = ss1_results_rq2 |>
+  mutate(
+    period = factor(period,
+      levels = c("late_pre","acute (0-3)",
+                 "early_recovery (4-14)","delayed (15-60)"),
+      labels = c("Pre-storm (−7 to −1)",
+                 "Acute (0–3)",
+                 "Early recovery (4–14)",
+                 "Delayed (15–60)")),
+    `Alternative periods` = sprintf("%.2f (%.2f–%.2f)", IRR, lower, upper)
+  ) |> select(period, `Alternative periods`)
+
+ss2 = ss2_results_rq2 |>
+  mutate(
+    period = factor(period,
+      levels = c("late_pre","acute","short_term","delayed"),
+      labels = c("Pre-storm (−7 to −1)",
+                 "Acute (0–7)",
+                 "Short-term (8–28)",
+                 "Delayed (29–60)")),
+    `Category 1+ only` = sprintf("%.2f (%.2f–%.2f)", IRR, lower, upper)
+  ) |> select(period, `Category 1+ only`)
+
+# Full join to preserve all rows across analyses
+tableA1 = main |>
+  full_join(ss1, by = "period") |>
+  full_join(ss2, by = "period")
+
+tableA1 |>
+  gt(rowname_col = "period") |>
+  tab_header(
+    title    = "Table A1. Sensitivity analyses: crisis call rate IRR (95% CI)",
+    subtitle = "Comparison of main analysis and pre-specified sensitivity analyses"
+  ) |>
+  cols_label(
+    Main                  = "Main analysis",
+    `Alternative periods` = "SS1: Alternative periods",
+    `Category 1+ only`   = "SS2: Category 1+ storms only"
+  ) |>
+  tab_footnote(
+    "IRR = incidence rate ratio (95% CI). SS1: alternative period boundaries (days 0–3 / 4–14 / 15–60). SS2: restricted to Category 1+ storms (peak wind ≥32.9 m/s). NA = period not defined in that analysis."
+  ) |>
+  tab_options(table.font.size = 12, heading.align = "left")
+```
 
