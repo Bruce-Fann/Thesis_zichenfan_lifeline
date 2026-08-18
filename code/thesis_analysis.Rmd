@@ -23,6 +23,9 @@ library(dplyr)
 library(readxl)
 library(splines) 
 library(gnm)
+library(sf)
+library(tigris)
+library(ggspatial)
 
 ```
 
@@ -690,8 +693,7 @@ cat("=== SS2 RQ3: Cat1+ only ===\n"); print(ss2_results_rq3)
 # 9. Map
 
 ```{r map}
-library(sf)
-library(tigris)
+
 options(tigris_use_cache = TRUE)
 
 # ── Storm count per state ──────────────────────────────────────
@@ -710,7 +712,6 @@ states_sf = states(cb = TRUE, resolution = "20m") |>
                     include.lowest = FALSE)
   )
 
-# ── Plot ───────────────────────────────────────────────────────
 ggplot() +
   geom_sf(data      = states_sf,
           aes(fill  = storm_bin),
@@ -726,14 +727,14 @@ ggplot() +
                  "8–12"  = "#de2d26",
                  "13–18" = "#a50f15",
                  "19+"   = "#67000d"),
-    na.value = "#d9d9d9",
-    na.translate = FALSE,       # don't show NA in legend
-    name     = "Storm events\n(n)",
-    drop     = FALSE
+    na.value    = "#d9d9d9",
+    na.translate = FALSE,
+    name        = "Storm events\n(n)",
+    drop        = FALSE
   ) +
   labs(
-    title   = "Figure 3. Tropical cyclone exposures by state, 2007–2021",
-    caption = "N = 58 storms with peak sustained wind ≥17.5 m/s.\nWhite = NA."
+    title   = "Tropical cyclone exposures by state, 2007–2021",
+    caption = "Source: hurricaneexposuredata R package (Anderson et al., 2020).\nN = 58 storms with peak sustained wind ≥17.5 m/s. White:Storm exposure Data =  NA  ."
   ) +
   theme_void() +
   theme(
