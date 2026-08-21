@@ -429,7 +429,7 @@ panel_c = df_full |>
   pivot_longer(everything(), names_to = "Characteristic", values_to = "Value")
 
 # ── Combine and render with gt ─────────────────────────────────
-bind_rows(
+table1 = bind_rows(
   panel_a |> mutate(Section = "A. Tropical cyclone exposures"),
   panel_b |> mutate(Section = "B. Crisis hotline outcomes"),
   panel_c |> mutate(Section = "C. Caller characteristics")
@@ -490,6 +490,13 @@ df_event |>
   ) +
   theme_bw() +
   theme(strip.text = element_text(size = 11))
+
+ggsave(
+  filename = "figures/figure1_descriptive_timeseries.png",
+  width    = 8,
+  height   = 6,
+  dpi      = 300
+)
 
 ```
 
@@ -756,9 +763,44 @@ ggplot() +
     plot.caption    = element_text(size = 9, colour = "gray40",
                                    margin = margin(t = 8))
   )
+
+ggsave(
+  filename = "figures/figure3_state_exposure_map.png",
+  width    = 10,
+  height   = 6,
+  dpi      = 300
+)
 ```
 
-# 9. Other Tables to be included
+# 9. Other Tables/figures to be included
+
+```{r figure 2}
+# forest plot with ggplot
+bind_rows(
+  results_rq3|> mutate(outcome = "Abandonment rate (IRR)"),
+  results_rq2|> mutate(outcome = "Call rate (IRR)")
+  
+) |>
+  mutate(period = factor(period,
+    levels = c("late_pre","acute","short_term","delayed"),
+    labels = c("Pre-storm\n(−7 to −1)", "Acute\n(0–7)",
+               "Short-term\n(8–28)", "Delayed\n(29–60)"))) |>
+  ggplot(aes(x = IRR, y = period, xmin = lower, xmax = upper,
+             colour = p < 0.05)) +
+  geom_vline(xintercept = 1, linetype = "dashed", colour = "gray50") +
+  geom_errorbarh(height = 0.2, linewidth = 0.8) +
+  geom_point(size = 3) +
+  scale_colour_manual(values = c("TRUE" = "#2a78d6", "FALSE" = "#888780"),
+                      labels = c("p ≥ 0.05", "p < 0.05"),
+                      name   = NULL) +
+  facet_wrap(~ outcome, scales = "free_x") +
+  labs(x = "IRR (95% CI)", y = NULL) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+ggsave("figures/figure2_forest_plot.png",
+       width = 10, height = 5, dpi = 300)
+```
 
 ```{r}
 
@@ -797,27 +839,41 @@ table2 = bind_rows(
               values_from = c(est_fmt, p_fmt),
               names_glue  = "{outcome}_{.value}")
 
-table2 |>
+table2_gt = table2 |>
+  # ── Reorder columns first ──────────────────────────────────
+  relocate(
+    `Crisis call rate_est_fmt`,
+    `Crisis call rate_p_fmt`,
+    `Call abandonment rate_est_fmt`,
+    `Call abandonment rate_p_fmt`,
+    .after = period
+  ) |>
   gt(rowname_col = "period") |>
   tab_header(
     title    = "Table 2. Association between tropical cyclone exposure and crisis hotline outcomes",
     subtitle = "Time-stratified conditional Poisson regression, 32 storm-affected states, 2007–2021"
   ) |>
   cols_label(
-    `Crisis call rate_est_fmt`       = "IRR (95% CI)",
-    `Crisis call rate_p_fmt`         = "p-value",
-    `Call abandonment rate_est_fmt`  = "IRR (95% CI)",
-    `Call abandonment rate_p_fmt`    = "p-value"
+    `Crisis call rate_est_fmt`      = "IRR (95% CI)",
+    `Crisis call rate_p_fmt`        = "p-value",
+    `Call abandonment rate_est_fmt` = "IRR (95% CI)",
+    `Call abandonment rate_p_fmt`   = "p-value"
   ) |>
-  tab_spanner(label = "Crisis call rate",       columns = 2:3) |>
-  tab_spanner(label = "Call abandonment rate",  columns = 4:5) |>
+  tab_spanner(
+    label   = "Crisis call rate",
+    columns = c(`Crisis call rate_est_fmt`, `Crisis call rate_p_fmt`)
+  ) |>
+  tab_spanner(
+    label   = "Call abandonment rate",
+    columns = c(`Call abandonment rate_est_fmt`, `Call abandonment rate_p_fmt`)
+  ) |>
   tab_footnote(
     "IRR = incidence rate ratio. Reference: unexposed state-days within the same state × year × month stratum. Models adjusted for day of week. Abandonment rate analysis restricted to 2013–2021."
   ) |>
   tab_options(table.font.size = 12, heading.align = "left")
 
 
-# ── Table A1: Sensitivity analyses ────────────────────────────
+# ── Table 3: Sensitivity analyses ────────────────────────────
 # Standardise period labels across all analyses first
 main = results_rq2|>
   mutate(
@@ -854,14 +910,14 @@ ss2 = ss2_results_rq2 |>
   ) |> select(period, `Category 1+ only`)
 
 # Full join to preserve all rows across analyses
-tableA1 = main |>
+table3 = main |>
   full_join(ss1, by = "period") |>
   full_join(ss2, by = "period")
 
-tableA1 |>
+table3_gt = table3 |>
   gt(rowname_col = "period") |>
   tab_header(
-    title    = "Table A1. Sensitivity analyses: crisis call rate IRR (95% CI)",
+    title    = "Table 3. Sensitivity analyses: crisis call rate IRR (95% CI)",
     subtitle = "Comparison of main analysis and pre-specified sensitivity analyses"
   ) |>
   cols_label(
@@ -873,5 +929,14 @@ tableA1 |>
     "IRR = incidence rate ratio (95% CI). SS1: alternative period boundaries (days 0–3 / 4–14 / 15–60). SS2: restricted to Category 1+ storms (peak wind ≥32.9 m/s). NA = period not defined in that analysis."
   ) |>
   tab_options(table.font.size = 12, heading.align = "left")
+
+table1 |>
+  gtsave("figures/table1_descriptive.html")
+
+table2_gt|>
+  gtsave("figures/table2_main_results.html")
+
+table3_gt |>
+  gtsave("figures/tableA1_sensitivity.html")
 ```
 
